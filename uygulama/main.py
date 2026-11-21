@@ -13,7 +13,6 @@ from db import (
     redis_client,
     temizle_veri,
     sp_cagir,
-    menu_onbellek_temizle,
 )
 
 logging.basicConfig(
@@ -28,11 +27,10 @@ app = FastAPI(
     openapi_url="/api/openapi.json",
 )
 
-OTURUM_SURESI = 60 * 30  # 30 dakika (1800 saniye)
+OTURUM_SURESI = 60 * 30
 
 
 def gun_sonuna_kalan_saniye() -> int:
-    """O gunun sonuna (23:59:59) kadar kalan saniyeyi dondurur."""
     simdi = datetime.now()
     yarin_basi = (simdi + timedelta(days=1)).replace(
         hour=0, minute=0, second=0, microsecond=0
@@ -56,9 +54,6 @@ def onbellek_temizle_ve_logla(neden: str, ozel_anahtar: Optional[str] = None):
     )
 
 
-# ---------------------------------------------------------------------
-# Istek Modelleri
-# ---------------------------------------------------------------------
 class GirisIstegi(BaseModel):
     eposta: str
     sifre: str
@@ -66,6 +61,7 @@ class GirisIstegi(BaseModel):
 
 class RezervasyonIstegi(BaseModel):
     menu_id: int
+    porsiyon: str = "tam"
 
 
 class BakiyeYukleIstegi(BaseModel):
@@ -99,9 +95,21 @@ class MenuGuncelleIstegi(BaseModel):
     yemek_idler: List[int]
 
 
-# ---------------------------------------------------------------------
-# Yetkilendirme Yardimcilari
-# ---------------------------------------------------------------------
+class AlerjenGuncelleIstegi(BaseModel):
+    alerjen_idler: List[int]
+
+
+def kullanici_alerjen_idleri(kullanici_id: int) -> List[int]:
+    with db_yazma() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT alerjen_id FROM kullanici_alerjenleri "
+                "WHERE kullanici_id = %s ORDER BY alerjen_id",
+                (kullanici_id,),
+            )
+            return [r["alerjen_id"] for r in cur.fetchall()]
+
+
 def mevcut_kullanici(request: Request, response: Response):
     token = request.cookies.get("oturum_id")
     if not token:
@@ -111,7 +119,6 @@ def mevcut_kullanici(request: Request, response: Response):
     if not veri:
         raise HTTPException(status_code=401, detail="Oturum süreniz doldu, tekrar giriş yapın.")
 
-    # Her istekte oturum suresini 30 dakikaya yenile
     redis_client.expire(redis_key, OTURUM_SURESI)
     response.set_cookie(
         key="oturum_id",
@@ -123,7 +130,6 @@ def mevcut_kullanici(request: Request, response: Response):
     )
     oturum = json.loads(veri)
 
-    # Read-your-own-writes: Kullanicinin guncel bakiyesi her zaman primary'den okunur
     with db_yazma() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -132,8 +138,14 @@ def mevcut_kullanici(request: Request, response: Response):
                 (oturum["kullanici_id"],),
             )
             kullanici = cur.fetchone()
-    if not kullanici or not kullanici["aktif"]:
-        raise HTTPException(status_code=401, detail="Hesabınız aktif değil.")
+            if not kullanici or not kullanici["aktif"]:
+                raise HTTPException(status_code=401, detail="Hesabınız aktif değil.")
+            cur.execute(
+                "SELECT alerjen_id FROM kullanici_alerjenleri "
+                "WHERE kullanici_id = %s ORDER BY alerjen_id",
+                (kullanici["id"],),
+            )
+            kullanici["alerjen_idler"] = [r["alerjen_id"] for r in cur.fetchall()]
     return temizle_veri(kullanici)
 
 
@@ -143,9 +155,6 @@ def yonetici_gerekli(kullanici=Depends(mevcut_kullanici)):
     return kullanici
 
 
-# ---------------------------------------------------------------------
-# Saglik ve Oturum
-# ---------------------------------------------------------------------
 @app.get("/api/saglik")
 def saglik():
     sonuc = {"durum": "ok", "yazma_db": False, "okuma_db": False, "redis": False}
@@ -202,6 +211,7 @@ def giris(istek: GirisIstegi, response: Response):
     )
 
     kullanici.pop("sifre_hash", None)
+    kullanici["alerjen_idler"] = kullanici_alerjen_idleri(kullanici["id"])
     return {"mesaj": "Giriş başarılı.", "kullanici": temizle_veri(kullanici)}
 
 
@@ -221,9 +231,36 @@ def ben(kullanici=Depends(mevcut_kullanici)):
     return kullanici
 
 
-# ---------------------------------------------------------------------
-# Filtreler ve Menuler (Okuma -> Replica + Redis Onbellek)
-# ---------------------------------------------------------------------
+@app.get("/api/profil/alerjenler")
+def profil_alerjenler(kullanici=Depends(mevcut_kullanici)):
+    return {"alerjen_idler": kullanici["alerjen_idler"]}
+
+
+@app.put("/api/profil/alerjenler")
+def profil_alerjen_guncelle(istek: AlerjenGuncelleIstegi, kullanici=Depends(mevcut_kullanici)):
+    benzersiz_idler = sorted(set(istek.alerjen_idler))
+    conn = db_yazma()
+    try:
+        conn.autocommit(False)
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM kullanici_alerjenleri WHERE kullanici_id = %s",
+                (kullanici["id"],),
+            )
+            for aid in benzersiz_idler:
+                cur.execute(
+                    "INSERT INTO kullanici_alerjenleri (kullanici_id, alerjen_id) VALUES (%s, %s)",
+                    (kullanici["id"], aid),
+                )
+        conn.commit()
+        return {"mesaj": "Alerjen tercihleriniz güncellendi.", "alerjen_idler": benzersiz_idler}
+    except pymysql.IntegrityError:
+        conn.rollback()
+        raise HTTPException(status_code=400, detail="Geçersiz alerjen seçimi.")
+    finally:
+        conn.close()
+
+
 @app.get("/api/filtreler")
 def filtreler():
     with db_okuma() as conn:
@@ -231,7 +268,7 @@ def filtreler():
             cur.execute("SELECT id, ad, konum, kapasite FROM yemekhaneler ORDER BY id")
             yemekhaneler = cur.fetchall()
             cur.execute(
-                "SELECT id, ad, sira, son_saat, servis_baslangic, servis_bitis "
+                "SELECT id, ad, sira, son_saat, servis_baslangic, servis_bitis, yarim_porsiyon "
                 "FROM ogunler ORDER BY sira"
             )
             ogunler = cur.fetchall()
@@ -256,7 +293,6 @@ def menuler(
     vejetaryen: Optional[bool] = Query(None),
     haric_alerjen: Optional[str] = Query(None),
 ):
-    # Yonerge formati: menu:{yemekhane_id}:{tarih}:{ogun_id}
     cache_key = f"menu:{yemekhane_id or 'hepsi'}:{tarih or 'hepsi'}:{ogun_id or 'hepsi'}"
     onbellek = redis_client.get(cache_key)
 
@@ -304,6 +340,7 @@ def menuler(
             if mid not in menuler_map:
                 dol = doluluk_map.get(mid, {})
                 puan = puan_map.get(mid, {})
+                yarim_izin = bool(satir["yarim_porsiyon"])
                 menuler_map[mid] = {
                     "menu_id": mid,
                     "tarih": satir["tarih"],
@@ -312,9 +349,12 @@ def menuler(
                     "ogun_id": satir["ogun_id"],
                     "ogun": satir["ogun"],
                     "ogun_sira": satir["ogun_sira"],
+                    "yarim_porsiyon": yarim_izin,
                     "rezervasyon_son": satir["rezervasyon_son"],
                     "ogrenci_fiyati": satir["ogrenci_fiyati"],
                     "personel_fiyati": satir["personel_fiyati"],
+                    "ogrenci_yarim_fiyati": round(satir["ogrenci_fiyati"] * 0.60, 2) if yarim_izin else None,
+                    "personel_yarim_fiyati": round(satir["personel_fiyati"] * 0.60, 2) if yarim_izin else None,
                     "kapasite": dol.get("kapasite", 0),
                     "rezerve": dol.get("rezerve", 0),
                     "bos_yer": dol.get("bos_yer", 0),
@@ -385,16 +425,13 @@ def menu_degerlendirmeleri(menu_id: int):
             return temizle_veri(cur.fetchall())
 
 
-# ---------------------------------------------------------------------
-# Rezervasyonlar (Yazma -> Stored Procedure, Kullanicinin Kendi Listesi -> Primary)
-# ---------------------------------------------------------------------
 @app.get("/api/rezervasyonlar")
 def rezervasyonlarim(kullanici=Depends(mevcut_kullanici)):
     with db_yazma() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT r.id, r.menu_id, r.durum, r.ucret, r.olusturma,
+                SELECT r.id, r.menu_id, r.durum, r.porsiyon, r.ucret, r.olusturma,
                        r.kullanma_zamani, r.iptal_zamani,
                        m.tarih, yh.ad AS yemekhane, o.ad AS ogun,
                        TIMESTAMP(m.tarih, o.son_saat) AS rezervasyon_son,
@@ -415,8 +452,9 @@ def rezervasyonlarim(kullanici=Depends(mevcut_kullanici)):
 
 @app.post("/api/rezervasyonlar")
 def rezervasyon_yap(istek: RezervasyonIstegi, kullanici=Depends(mevcut_kullanici)):
-    sonuc = sp_cagir("sp_rezervasyon_yap", (kullanici["id"], istek.menu_id))
-    onbellek_temizle_ve_logla(f"Rezervasyon yapildi (menu_id={istek.menu_id})")
+    porsiyon = (istek.porsiyon or "tam").strip().lower()
+    sonuc = sp_cagir("sp_rezervasyon_yap", (kullanici["id"], istek.menu_id, porsiyon))
+    onbellek_temizle_ve_logla(f"Rezervasyon yapildi (menu_id={istek.menu_id}, porsiyon={porsiyon})")
     return {"mesaj": "Rezervasyonunuz oluşturuldu.", **sonuc}
 
 
@@ -427,9 +465,6 @@ def rezervasyon_iptal(rezervasyon_id: int, kullanici=Depends(mevcut_kullanici)):
     return {"mesaj": "Rezervasyon iptal edildi ve ücret iade edildi.", **sonuc}
 
 
-# ---------------------------------------------------------------------
-# Bakiye
-# ---------------------------------------------------------------------
 @app.post("/api/bakiye/yukle")
 def bakiye_yukle(istek: BakiyeYukleIstegi, kullanici=Depends(mevcut_kullanici)):
     sonuc = sp_cagir("sp_bakiye_yukle", (kullanici["id"], istek.tutar))
@@ -453,9 +488,6 @@ def bakiye_hareketleri(kullanici=Depends(mevcut_kullanici)):
             return temizle_veri(cur.fetchall())
 
 
-# ---------------------------------------------------------------------
-# Degerlendirmeler (Yalnizca kullanilmis rezervasyonu olan menuler)
-# ---------------------------------------------------------------------
 @app.post("/api/degerlendirmeler")
 def degerlendirme_ekle(istek: DegerlendirmeIstegi, kullanici=Depends(mevcut_kullanici)):
     if istek.puan < 1 or istek.puan > 5:
@@ -492,9 +524,6 @@ def degerlendirme_ekle(istek: DegerlendirmeIstegi, kullanici=Depends(mevcut_kull
         raise HTTPException(status_code=400, detail="Değerlendirme kaydedilemedi.")
 
 
-# ---------------------------------------------------------------------
-# Yonetici Paneli Uclari
-# ---------------------------------------------------------------------
 @app.get("/api/yonetim/yemekler")
 def yonetim_yemekler(_=Depends(yonetici_gerekli)):
     with db_okuma() as conn:

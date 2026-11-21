@@ -14,6 +14,7 @@
         <button class="nav-btn aktif" data-sekme="menuler">Menüler</button>
         <button class="nav-btn gizli" data-sekme="rezervasyonlar" id="nav-rez">Rezervasyonlarım</button>
         <button class="nav-btn gizli" data-sekme="bakiye" id="nav-bakiye">Bakiye</button>
+        <button class="nav-btn gizli" data-sekme="profil" id="nav-profil">Profilim</button>
         <button class="nav-btn gizli" data-sekme="yonetim" id="nav-yonetim">Yönetim</button>
       </nav>
       <div class="kullanici-alani" id="kullanici-alani">
@@ -25,7 +26,6 @@
   <main class="kap ana-icerik">
     <div id="bildirim" class="bildirim gizli"></div>
 
-    <!-- SEKME 1: MENÜLER -->
     <section id="sekme-menuler" class="sekme">
       <div class="kart filtre-karti">
         <div class="filtre-satir">
@@ -58,7 +58,6 @@
       <div id="menu-listesi" class="menu-izgara"></div>
     </section>
 
-    <!-- SEKME 2: REZERVASYONLARIM -->
     <section id="sekme-rezervasyonlar" class="sekme gizli">
       <div class="kart">
         <h2>Rezervasyonlarım</h2>
@@ -69,6 +68,7 @@
                 <th>Tarih</th>
                 <th>Yemekhane</th>
                 <th>Öğün</th>
+                <th>Porsiyon</th>
                 <th>Ücret</th>
                 <th>Durum</th>
                 <th>İşlem</th>
@@ -80,7 +80,6 @@
       </div>
     </section>
 
-    <!-- SEKME 3: BAKİYE -->
     <section id="sekme-bakiye" class="sekme gizli">
       <div class="iki-sutun">
         <div class="kart">
@@ -116,7 +115,27 @@
       </div>
     </section>
 
-    <!-- SEKME 4: YÖNETİM PANELİ -->
+    <section id="sekme-profil" class="sekme gizli">
+      <div class="iki-sutun">
+        <div class="kart">
+          <h2>Hesap Bilgileri</h2>
+          <div id="profil-bilgi" class="profil-bilgi"></div>
+        </div>
+        <div class="kart">
+          <h2>Alerjen Tercihlerim</h2>
+          <p class="menu-alt-bilgi" style="margin-bottom:12px;">
+            Seçtiğiniz alerjenleri içeren yemekler menü ekranında uyarı ile işaretlenir.
+          </p>
+          <form id="form-alerjen" class="dikey-form">
+            <div id="p-alerjenler" class="alerjen-liste"></div>
+            <div style="margin-top:8px;">
+              <button type="submit" class="btn btn-birincil">Tercihleri Kaydet</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
     <section id="sekme-yonetim" class="sekme gizli">
       <div id="yonetim-ozet-kartlar" class="ozet-izgara"></div>
 
@@ -177,7 +196,6 @@
     </section>
   </main>
 
-  <!-- GİRİŞ MODALI -->
   <div id="modal-giris" class="modal gizli">
     <div class="modal-kutu">
       <h3>Giriş Yap</h3>
@@ -192,7 +210,6 @@
     </div>
   </div>
 
-  <!-- DEĞERLENDİRME MODALI -->
   <div id="modal-degerlendir" class="modal gizli">
     <div class="modal-kutu">
       <h3>Menüyü Değerlendir</h3>
@@ -218,7 +235,6 @@
     </div>
   </div>
 
-  <!-- YORUMLAR MODALI -->
   <div id="modal-yorumlar" class="modal gizli">
     <div class="modal-kutu">
       <h3 id="yorumlar-baslik">Menü Değerlendirmeleri</h3>
@@ -226,6 +242,25 @@
       <div class="modal-butonlar">
         <button type="button" class="btn btn-birincil modal-kapat">Kapat</button>
       </div>
+    </div>
+  </div>
+
+  <div id="modal-menu-duzenle" class="modal gizli">
+    <div class="modal-kutu">
+      <h3 id="duz-baslik">Menü Düzenle</h3>
+      <form id="form-menu-duzenle" class="dikey-form">
+        <input type="hidden" id="duz-menu-id" />
+        <div class="iki-alan">
+          <label>Öğrenci (TL) <input type="number" id="duz-ogr-fiyat" min="0" step="0.5" required /></label>
+          <label>Personel (TL) <input type="number" id="duz-per-fiyat" min="0" step="0.5" required /></label>
+        </div>
+        <label>Yemekler</label>
+        <div id="duz-yemekler" class="yemek-secim-kutusu"></div>
+        <div class="modal-butonlar">
+          <button type="button" class="btn btn-ikincil modal-kapat">İptal</button>
+          <button type="submit" class="btn btn-birincil">Güncelle</button>
+        </div>
+      </form>
     </div>
   </div>
 
