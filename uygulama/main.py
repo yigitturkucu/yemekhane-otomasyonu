@@ -1,5 +1,7 @@
 import json
+import logging
 import secrets
+from datetime import datetime, timedelta
 from typing import List, Optional
 import bcrypt
 import pymysql
@@ -14,14 +16,44 @@ from db import (
     menu_onbellek_temizle,
 )
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+)
+logger = logging.getLogger("yemekhane")
+
 app = FastAPI(
     title="Yemekhane Otomasyonu API",
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
 )
 
-OTURUM_SURESI = 60 * 60 * 24  # 24 saat
-MENU_CACHE_TTL = 120          # 2 dakika
+OTURUM_SURESI = 60 * 30  # 30 dakika (1800 saniye)
+
+
+def gun_sonuna_kalan_saniye() -> int:
+    """O gunun sonuna (23:59:59) kadar kalan saniyeyi dondurur."""
+    simdi = datetime.now()
+    yarin_basi = (simdi + timedelta(days=1)).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    )
+    kalan = int((yarin_basi - simdi).total_seconds())
+    return max(kalan, 60)
+
+
+def onbellek_temizle_ve_logla(neden: str, ozel_anahtar: Optional[str] = None):
+    silinenler = []
+    if ozel_anahtar and redis_client.delete(ozel_anahtar):
+        silinenler.append(ozel_anahtar)
+    anahtarlar = redis_client.keys("menu:*")
+    if anahtarlar:
+        redis_client.delete(*anahtarlar)
+        silinenler.extend(anahtarlar)
+    logger.info(
+        "[REDIS INVALIDATE] Neden: %s | Silinen anahtar sayisi: %d",
+        neden,
+        len(silinenler),
+    )
 
 
 # ---------------------------------------------------------------------
@@ -70,13 +102,25 @@ class MenuGuncelleIstegi(BaseModel):
 # ---------------------------------------------------------------------
 # Yetkilendirme Yardimcilari
 # ---------------------------------------------------------------------
-def mevcut_kullanici(request: Request):
+def mevcut_kullanici(request: Request, response: Response):
     token = request.cookies.get("oturum_id")
     if not token:
         raise HTTPException(status_code=401, detail="Giriş yapmanız gerekiyor.")
-    veri = redis_client.get(f"oturum:{token}")
+    redis_key = f"oturum:{token}"
+    veri = redis_client.get(redis_key)
     if not veri:
         raise HTTPException(status_code=401, detail="Oturum süreniz doldu, tekrar giriş yapın.")
+
+    # Her istekte oturum suresini 30 dakikaya yenile
+    redis_client.expire(redis_key, OTURUM_SURESI)
+    response.set_cookie(
+        key="oturum_id",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=OTURUM_SURESI,
+        path="/",
+    )
     oturum = json.loads(veri)
 
     # Read-your-own-writes: Kullanicinin guncel bakiyesi her zaman primary'den okunur
@@ -136,10 +180,17 @@ def giris(istek: GirisIstegi, response: Response):
         raise HTTPException(status_code=403, detail="Hesabınız pasif durumda.")
 
     token = secrets.token_hex(32)
+    redis_key = f"oturum:{token}"
     redis_client.setex(
-        f"oturum:{token}",
+        redis_key,
         OTURUM_SURESI,
         json.dumps({"kullanici_id": kullanici["id"], "rol": kullanici["rol"]}),
+    )
+    logger.info(
+        "[OTURUM OLUSTURULDU] Anahtar: %s | Kullanici ID: %s | TTL: %ds",
+        redis_key,
+        kullanici["id"],
+        OTURUM_SURESI,
     )
     response.set_cookie(
         key="oturum_id",
@@ -158,7 +209,9 @@ def giris(istek: GirisIstegi, response: Response):
 def cikis(request: Request, response: Response):
     token = request.cookies.get("oturum_id")
     if token:
-        redis_client.delete(f"oturum:{token}")
+        redis_key = f"oturum:{token}"
+        redis_client.delete(redis_key)
+        logger.info("[OTURUM SILINDI] Anahtar: %s", redis_key)
     response.delete_cookie("oturum_id", path="/")
     return {"mesaj": "Çıkış yapıldı."}
 
@@ -203,13 +256,16 @@ def menuler(
     vejetaryen: Optional[bool] = Query(None),
     haric_alerjen: Optional[str] = Query(None),
 ):
-    cache_key = f"menu:{tarih or 'hepsi'}:{yemekhane_id or 'hepsi'}:{ogun_id or 'hepsi'}"
+    # Yonerge formati: menu:{yemekhane_id}:{tarih}:{ogun_id}
+    cache_key = f"menu:{yemekhane_id or 'hepsi'}:{tarih or 'hepsi'}:{ogun_id or 'hepsi'}"
     onbellek = redis_client.get(cache_key)
 
     if onbellek:
         menu_listesi = json.loads(onbellek)
         response.headers["X-Cache"] = "HIT"
+        logger.info("[MENU ONBELLEK HIT] %s -> Redis'ten getirildi", cache_key)
     else:
+        logger.info("[MENU ONBELLEK MISS] %s -> MySQL replikadan okunuyor", cache_key)
         kosullar = []
         parametreler = []
         if tarih:
@@ -286,8 +342,10 @@ def menuler(
             menuler_map[mid]["toplam_kalori"] += satir["kalori"]
 
         menu_listesi = list(menuler_map.values())
-        redis_client.setex(cache_key, MENU_CACHE_TTL, json.dumps(menu_listesi, ensure_ascii=False))
+        ttl = gun_sonuna_kalan_saniye()
+        redis_client.setex(cache_key, ttl, json.dumps(menu_listesi, ensure_ascii=False))
         response.headers["X-Cache"] = "MISS"
+        logger.info("[MENU ONBELLEK SET] %s | TTL: %ds (gun sonuna kadar)", cache_key, ttl)
 
     haric_idler = set()
     if haric_alerjen:
@@ -358,14 +416,14 @@ def rezervasyonlarim(kullanici=Depends(mevcut_kullanici)):
 @app.post("/api/rezervasyonlar")
 def rezervasyon_yap(istek: RezervasyonIstegi, kullanici=Depends(mevcut_kullanici)):
     sonuc = sp_cagir("sp_rezervasyon_yap", (kullanici["id"], istek.menu_id))
-    menu_onbellek_temizle()
+    onbellek_temizle_ve_logla(f"Rezervasyon yapildi (menu_id={istek.menu_id})")
     return {"mesaj": "Rezervasyonunuz oluşturuldu.", **sonuc}
 
 
 @app.post("/api/rezervasyonlar/{rezervasyon_id}/iptal")
 def rezervasyon_iptal(rezervasyon_id: int, kullanici=Depends(mevcut_kullanici)):
     sonuc = sp_cagir("sp_rezervasyon_iptal", (kullanici["id"], rezervasyon_id))
-    menu_onbellek_temizle()
+    onbellek_temizle_ve_logla(f"Rezervasyon iptal edildi (rez_id={rezervasyon_id})")
     return {"mesaj": "Rezervasyon iptal edildi ve ücret iade edildi.", **sonuc}
 
 
@@ -426,7 +484,7 @@ def degerlendirme_ekle(istek: DegerlendirmeIstegi, kullanici=Depends(mevcut_kull
                     "VALUES (%s, %s, %s, %s)",
                     (kullanici["id"], istek.menu_id, istek.puan, yorum),
                 )
-        menu_onbellek_temizle()
+        onbellek_temizle_ve_logla(f"Degerlendirme eklendi (menu_id={istek.menu_id})")
         return {"mesaj": "Değerlendirmeniz kaydedildi."}
     except pymysql.IntegrityError as e:
         if e.args and e.args[0] == 1062:
@@ -496,7 +554,8 @@ def yonetim_menu_ekle(istek: MenuOlusturIstegi, _=Depends(yonetici_gerekli)):
                     (menu_id, yid),
                 )
         conn.commit()
-        menu_onbellek_temizle()
+        ozel = f"menu:{istek.yemekhane_id}:{istek.tarih}:{istek.ogun_id}"
+        onbellek_temizle_ve_logla(f"Yeni menu eklendi ({ozel})", ozel_anahtar=ozel)
         return {"mesaj": "Yeni menü eklendi.", "menu_id": menu_id}
     except pymysql.IntegrityError as e:
         conn.rollback()
@@ -522,8 +581,13 @@ def yonetim_menu_guncelle(menu_id: int, istek: MenuGuncelleIstegi, _=Depends(yon
     try:
         conn.autocommit(False)
         with conn.cursor() as cur:
-            cur.execute("SELECT id FROM menuler WHERE id = %s", (menu_id,))
-            if not cur.fetchone():
+            cur.execute(
+                "SELECT id, yemekhane_id, DATE_FORMAT(tarih, '%%Y-%%m-%%d') AS tarih, ogun_id "
+                "FROM menuler WHERE id = %s",
+                (menu_id,),
+            )
+            mevcut = cur.fetchone()
+            if not mevcut:
                 raise HTTPException(status_code=404, detail="Menü bulunamadı.")
 
             cur.execute(
@@ -537,7 +601,8 @@ def yonetim_menu_guncelle(menu_id: int, istek: MenuGuncelleIstegi, _=Depends(yon
                     (menu_id, yid),
                 )
         conn.commit()
-        menu_onbellek_temizle()
+        ozel = f"menu:{mevcut['yemekhane_id']}:{mevcut['tarih']}:{mevcut['ogun_id']}"
+        onbellek_temizle_ve_logla(f"Menu guncellendi (menu_id={menu_id}, {ozel})", ozel_anahtar=ozel)
         return {"mesaj": "Menü güncellendi."}
     except HTTPException:
         conn.rollback()
@@ -554,10 +619,21 @@ def yonetim_menu_sil(menu_id: int, _=Depends(yonetici_gerekli)):
     try:
         with db_yazma() as conn:
             with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT yemekhane_id, DATE_FORMAT(tarih, '%%Y-%%m-%%d') AS tarih, ogun_id "
+                    "FROM menuler WHERE id = %s",
+                    (menu_id,),
+                )
+                mevcut = cur.fetchone()
                 cur.execute("DELETE FROM menuler WHERE id = %s", (menu_id,))
                 if cur.rowcount == 0:
                     raise HTTPException(status_code=404, detail="Menü bulunamadı.")
-        menu_onbellek_temizle()
+        ozel = (
+            f"menu:{mevcut['yemekhane_id']}:{mevcut['tarih']}:{mevcut['ogun_id']}"
+            if mevcut
+            else None
+        )
+        onbellek_temizle_ve_logla(f"Menu silindi (menu_id={menu_id})", ozel_anahtar=ozel)
         return {"mesaj": "Menü silindi."}
     except pymysql.IntegrityError as e:
         if e.args and e.args[0] == 1451:
