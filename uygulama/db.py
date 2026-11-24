@@ -1,7 +1,7 @@
 import os
-import json
 from decimal import Decimal
 from datetime import date, datetime, timedelta
+from typing import Optional
 import pymysql
 import redis
 from fastapi import HTTPException
@@ -59,7 +59,6 @@ def temizle_veri(obj):
 
 
 def sp_cagir(proc_adi: str, params: tuple):
-    """Stored procedure'leri mysql-primary uzerinde autocommit ile cagirir."""
     try:
         with db_yazma() as conn:
             with conn.cursor() as cur:
@@ -71,13 +70,15 @@ def sp_cagir(proc_adi: str, params: tuple):
     except pymysql.MySQLError as e:
         kod = e.args[0] if e.args else 0
         mesaj = e.args[1] if len(e.args) > 1 else "Veritabanı hatası."
-        # Stored procedure is kurali hatasi (SQLSTATE 45000 / kod 1644)
         if kod == 1644:
             raise HTTPException(status_code=400, detail=mesaj)
         raise HTTPException(status_code=500, detail="İşlem sırasında bir hata oluştu.")
 
 
-def menu_onbellek_temizle():
+def menu_onbellek_temizle(ozel_anahtar: Optional[str] = None) -> int:
+    if ozel_anahtar:
+        return int(redis_client.delete(ozel_anahtar))
     anahtarlar = redis_client.keys("menu:*")
     if anahtarlar:
-        redis_client.delete(*anahtarlar)
+        return int(redis_client.delete(*anahtarlar))
+    return 0

@@ -143,6 +143,12 @@ services:
     restart: unless-stopped
     environment:
       <<: *uygulama-ortam
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/saglik')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 15s
     depends_on:
       mysql-primary:
         condition: service_healthy

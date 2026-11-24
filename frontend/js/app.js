@@ -1,9 +1,54 @@
 let kullanici = null;
 let filtreVerisi = null;
 let tumYemekler = [];
+let aktifGorunum = "bugun";
 
 const $ = (secici) => document.querySelector(secici);
 const $$ = (secici) => document.querySelectorAll(secici);
+
+function bugunTarihStr() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const a = String(d.getMonth() + 1).padStart(2, "0");
+  const g = String(d.getDate()).padStart(2, "0");
+  return `${y}-${a}-${g}`;
+}
+
+function gunEkleStr(tarihStr, gun) {
+  const d = new Date(`${tarihStr}T00:00:00`);
+  d.setDate(d.getDate() + gun);
+  const y = d.getFullYear();
+  const a = String(d.getMonth() + 1).padStart(2, "0");
+  const g = String(d.getDate()).padStart(2, "0");
+  return `${y}-${a}-${g}`;
+}
+
+function sureGectiMi(tarihSaatStr) {
+  if (!tarihSaatStr) return false;
+  const hedef = new Date(tarihSaatStr.replace(" ", "T"));
+  return Date.now() >= hedef.getTime();
+}
+
+function gorunumGuncelle(mod) {
+  aktifGorunum = mod;
+  $$(".gorunum-btn").forEach((b) => {
+    b.classList.toggle("aktif-gorunum", b.dataset.gorunum === mod);
+  });
+  const bugun = bugunTarihStr();
+  const bilgi = $("#gorunum-bilgi");
+  if (mod === "bugun") {
+    $("#f-tarih").value = filtreVerisi && filtreVerisi.tarihler.includes(bugun) ? bugun : "";
+    if (bilgi) bilgi.textContent = `Tarih: ${bugun}`;
+  } else if (mod === "hafta") {
+    $("#f-tarih").value = "";
+    if (bilgi) bilgi.textContent = `${bugun} - ${gunEkleStr(bugun, 6)}`;
+  } else if (mod === "tumu") {
+    $("#f-tarih").value = "";
+    if (bilgi) bilgi.textContent = "Kayıtlı tüm tarihler";
+  } else {
+    if (bilgi) bilgi.textContent = $("#f-tarih").value ? `Seçili tarih: ${$("#f-tarih").value}` : "";
+  }
+}
 
 function bildirimGoster(mesaj, tur = "basari") {
   const el = $("#bildirim");
@@ -124,11 +169,29 @@ async function filtreleriYukle() {
       </label>
     `;
   });
+
+  const bugun = bugunTarihStr();
+  if (filtreVerisi.tarihler.includes(bugun)) {
+    gorunumGuncelle("bugun");
+  } else {
+    gorunumGuncelle("tumu");
+  }
 }
 
 async function menuleriYukle() {
   const params = new URLSearchParams();
-  if ($("#f-tarih").value) params.set("tarih", $("#f-tarih").value);
+  const seciliTarih = $("#f-tarih").value;
+  const bugun = bugunTarihStr();
+
+  if (seciliTarih) {
+    params.set("tarih", seciliTarih);
+  } else if (aktifGorunum === "bugun") {
+    params.set("tarih", bugun);
+  } else if (aktifGorunum === "hafta") {
+    params.set("baslangic_tarih", bugun);
+    params.set("bitis_tarih", gunEkleStr(bugun, 6));
+  }
+
   if ($("#f-yemekhane").value) params.set("yemekhane_id", $("#f-yemekhane").value);
   if ($("#f-ogun").value) params.set("ogun_id", $("#f-ogun").value);
   if ($("#f-vejetaryen").checked) params.set("vejetaryen", "true");
@@ -189,20 +252,40 @@ async function menuleriYukle() {
           ? `⭐ ${m.ortalama_puan} (${m.oy_sayisi})`
           : "Henüz puan yok";
 
-        const fiyatHtml = m.yarim_porsiyon
-          ? `
-            Öğrenci: <strong>${m.ogrenci_fiyati} TL</strong> <span class="yarim-fiyat">(Yarım: ${m.ogrenci_yarim_fiyati} TL)</span><br/>
-            Personel: <strong>${m.personel_fiyati} TL</strong> <span class="yarim-fiyat">(Yarım: ${m.personel_yarim_fiyati} TL)</span>
-          `
-          : `
-            Öğrenci: <strong>${m.ogrenci_fiyati} TL</strong><br/>
-            Personel: <strong>${m.personel_fiyati} TL</strong><br/>
-            <span class="yarim-fiyat">Yalnızca tam porsiyon</span>
-          `;
+        let fiyatHtml = "";
+        if (kullanici) {
+          const ogrenciMi = kullanici.rol === "ogrenci";
+          const tamFiyat = ogrenciMi ? m.ogrenci_fiyati : m.personel_fiyati;
+          const yarimFiyat = ogrenciMi ? m.ogrenci_yarim_fiyati : m.personel_yarim_fiyati;
+          const rolEtiket = ogrenciMi ? "Öğrenci" : "Personel";
+          fiyatHtml = m.yarim_porsiyon
+            ? `${rolEtiket}: <strong>${tamFiyat} TL</strong><br/><span class="yarim-fiyat">Yarım Porsiyon: ${yarimFiyat} TL</span>`
+            : `${rolEtiket}: <strong>${tamFiyat} TL</strong><br/><span class="yarim-fiyat">Yalnızca tam porsiyon</span>`;
+        } else {
+          fiyatHtml = m.yarim_porsiyon
+            ? `
+              Öğrenci: <strong>${m.ogrenci_fiyati} TL</strong> <span class="yarim-fiyat">(Yarım: ${m.ogrenci_yarim_fiyati} TL)</span><br/>
+              Personel: <strong>${m.personel_fiyati} TL</strong> <span class="yarim-fiyat">(Yarım: ${m.personel_yarim_fiyati} TL)</span>
+            `
+            : `
+              Öğrenci: <strong>${m.ogrenci_fiyati} TL</strong><br/>
+              Personel: <strong>${m.personel_fiyati} TL</strong><br/>
+              <span class="yarim-fiyat">Yalnızca tam porsiyon</span>
+            `;
+        }
+
+        const suresiDoldu = sureGectiMi(m.rezervasyon_son);
+        const doluMu = m.bos_yer <= 0;
+        const pasifMi = suresiDoldu || doluMu;
+        const butonMetin = suresiDoldu
+          ? "Süre Doldu"
+          : doluMu
+          ? "Kontenjan Dolu"
+          : "Rezervasyon Yap";
 
         const porsiyonSecimHtml = m.yarim_porsiyon
           ? `
-            <select id="porsiyon-${m.menu_id}" class="porsiyon-secim">
+            <select id="porsiyon-${m.menu_id}" class="porsiyon-secim" ${pasifMi ? "disabled" : ""}>
               <option value="tam">Tam Porsiyon</option>
               <option value="yarim">Yarım Porsiyon (%60)</option>
             </select>
@@ -235,7 +318,7 @@ async function menuleriYukle() {
               <div class="fiyatlar">${fiyatHtml}</div>
               <div class="porsiyon-alan">
                 ${porsiyonSecimHtml}
-                <button class="btn btn-birincil" onclick="rezervasyonYap(${m.menu_id})">Rezervasyon Yap</button>
+                <button class="btn btn-birincil" ${pasifMi ? "disabled" : `onclick="rezervasyonYap(${m.menu_id})"`}>${butonMetin}</button>
               </div>
             </div>
           </div>
@@ -328,7 +411,11 @@ async function rezervasyonlariYukle() {
 
         let islemHtml = "-";
         if (r.durum === "aktif") {
-          islemHtml = `<button class="btn btn-tehlike btn-kucuk" onclick="rezervasyonIptal(${r.id})">İptal Et</button>`;
+          if (sureGectiMi(r.rezervasyon_son)) {
+            islemHtml = `<button class="btn btn-ikincil btn-kucuk" disabled>Süre Doldu</button>`;
+          } else {
+            islemHtml = `<button class="btn btn-tehlike btn-kucuk" onclick="rezervasyonIptal(${r.id})">İptal Et</button>`;
+          }
         } else if (r.durum === "kullanildi" && !r.degerlendirme_id) {
           islemHtml = `<button class="btn btn-birincil btn-kucuk" onclick="degerlendirAc(${r.menu_id})">Değerlendir</button>`;
         } else if (r.degerlendirme_id) {
@@ -541,6 +628,21 @@ document.addEventListener("DOMContentLoaded", async () => {
     btn.addEventListener("click", () => btn.closest(".modal").classList.add("gizli"));
   });
 
+  $$(".gorunum-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      gorunumGuncelle(btn.dataset.gorunum);
+      menuleriYukle();
+    });
+  });
+
+  $("#f-tarih").addEventListener("change", () => {
+    if ($("#f-tarih").value) {
+      gorunumGuncelle("ozel");
+    } else {
+      gorunumGuncelle("tumu");
+    }
+  });
+
   $("#btn-filtrele").addEventListener("click", menuleriYukle);
   $("#btn-filtre-temizle").addEventListener("click", () => {
     $("#f-tarih").value = "";
@@ -548,6 +650,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     $("#f-ogun").value = "";
     $("#f-vejetaryen").checked = false;
     $$(".alerjen-cb").forEach((c) => (c.checked = false));
+    gorunumGuncelle("tumu");
     menuleriYukle();
   });
 

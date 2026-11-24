@@ -270,3 +270,55 @@ body {
 .modal-butonlar { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
 .yorum-listesi { display: flex; flex-direction: column; gap: 10px; }
 .yorum-oge { background: #f8fafc; padding: 10px; border-radius: 8px; font-size: 0.9rem; }
+.btn:disabled,
+.porsiyon-secim:disabled {
+  background: #cbd5e1;
+  color: #64748b;
+  cursor: not-allowed;
+  opacity: 0.75;
+}
+.btn:disabled:hover {
+  background: #cbd5e1;
+}
+.gorunum-satir {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid #e2e8f0;
+}
+.gorunum-btn.aktif-gorunum {
+  background: #2563eb;
+  color: #fff;
+}
+.dikey-form label.alerjen-etiket {
+  flex-direction: row;
+  align-items: center;
+  gap: 5px;
+  font-weight: 500;
+  color: #1e293b;
+}
+
+@media (max-width: 600px) {
+  .kap { padding: 0 10px; }
+  .ust-ic { flex-direction: column; align-items: stretch; gap: 8px; }
+  .menu-nav { justify-content: flex-start; }
+  .kullanici-alani { justify-content: space-between; flex-wrap: wrap; }
+  .filtre-satir { flex-direction: column; align-items: stretch; }
+  .alan { min-width: 0; width: 100%; }
+  .buton-alan { width: 100%; }
+  .buton-alan .btn { flex: 1; }
+  .menu-izgara,
+  .iki-sutun,
+  .iki-alan,
+  .uc-alan,
+  .yemek-secim-kutusu {
+    grid-template-columns: 1fr;
+  }
+  .ozet-izgara { grid-template-columns: 1fr 1fr; }
+  .menu-alt { flex-direction: column; align-items: stretch; }
+  .porsiyon-alan { width: 100%; }
+  .btn, .nav-btn { min-height: 40px; }
+}
